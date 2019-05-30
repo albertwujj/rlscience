@@ -1,6 +1,7 @@
-from a2c_ppo_acktr.model import Policy
-from a2c_ppo_acktr import algo, envs as envslib, storage, utils
-from a2c_ppo_acktr import arguments
+from ac_policy import Policy
+from a2c_ppo_acktr import algo, storage, utils
+from env_util import make_vec_envs
+
 import multiprocessing as mp
 import numpy as np
 import os
@@ -8,11 +9,15 @@ from collections import deque
 import torch
 from timeit import default_timer as timer
 import ppo_args
-device = torch.device("cuda:0")
 import gail_util
 
 
+print(' ' * 26 + 'Options')
+for k, v in vars(ppo_args).items():
+    print(' ' * 26 + k + ': ' + str(v))
+
 def pg(envs, printout, use_gail=False):
+
     if use_gail:
         assert len(envs.observation_space.shape) == 1
         discr = gail_util.Discriminator(
@@ -122,7 +127,9 @@ def pg(envs, printout, use_gail=False):
                 f'min/max reward {np.min(episode_rewards):.1f}/{np.max(episode_rewards):.1f}')
                 #f'entropy: {dist_entropy:.3f}, action loss: {action_loss:.3f}')
 
-env_name = 'ReacherBulletEnv-v0'
+env_name = 'PongNoFrameskip-v4'
+device = torch.device("cuda:0")
+
 use_gail = False
 prefix_gail = 'gail_' if use_gail else ''
 out_path = f'outs/{prefix_gail}ppo_{env_name}'
@@ -131,5 +138,5 @@ def printout(w):
     f.write(w + '\n')
     print(w)
 
-envs = envslib.make_vec_envs(env_name, 1957, ppo_args.num_envs, ppo_args.gamma, 'envlog', device, False)
+envs = make_vec_envs(env_name, 1957, ppo_args.num_envs, ppo_args.gamma, 'envlog', device, False)
 pg(envs, printout, use_gail=use_gail)

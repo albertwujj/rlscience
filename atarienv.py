@@ -7,7 +7,6 @@ import torch
 
 class Env():
   def __init__(self, device, seed, max_episode_length, game, history_length):
-    self.action_space = len(self.actions)
 
     self.device = device
     self.ale = atari_py.ALEInterface()
@@ -24,6 +23,8 @@ class Env():
     self.window = history_length  # Number of frames to concatenate
     self.state_buffer = deque([], maxlen=history_length)
     self.training = True  # Consistent with model training mode
+
+    self.action_space = len(self.actions)
 
   def _get_state(self):
     state = cv2.resize(self.ale.getScreenGrayscale(), (84, 84), interpolation=cv2.INTER_LINEAR)

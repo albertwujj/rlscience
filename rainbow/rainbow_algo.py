@@ -1,16 +1,20 @@
-import os
-import numpy as np
 import torch
-from rainbow.rainbowpolicy import Policy
+from torch import optim
 
-
-class Qlearn():
-    def __init__(self, online_net, target_net, batch_size, multi_step, discount):
+class RainbowQLearn():
+    def __init__(self, policy, lr, adam_eps, batch_size, multi_step, gamma):
         self.batch_size = batch_size
         self.n = multi_step
-        self.discount = discount
-        self.online_net = online_net
-        self.target_net = target_net
+        self.gamma = gamma
+        self.online_net = policy.online_net
+        self.target_net = policy.target_net
+        self.atoms = policy.atoms
+        self.V_min = policy.V_min
+        self.V_max = policy.V_max
+        self.support = policy.support
+        self.delta_z = (self.V_max - self.V_min) / (self.atoms - 1)
+        self.optimiser = optim.Adam(self.online_net.parameters(), lr=lr, eps=adam_eps)
+
 
     def update(self, mem):
         # Sample transitions
@@ -32,11 +36,11 @@ class Qlearn():
                 self.batch_size), argmax_indices_ns]  # Double-Q probabilities p(s_t+n, argmax_a[(z, p(s_t+n, a; θonline))]; θtarget)
 
             # Compute Tz (Bellman operator T applied to z)
-            Tz = returns.unsqueeze(1) + nonterminals * (self.discount ** self.n) * self.support.unsqueeze(
+            Tz = returns.unsqueeze(1) + nonterminals * (self.gamma ** self.n) * self.support.unsqueeze(
                 0)  # Tz = R^n + (γ^n)z (accounting for terminal states)
-            Tz = Tz.clamp(min=self.Vmin, max=self.Vmax)  # Clamp between supported values
+            Tz = Tz.clamp(min=self.V_min, max=self.V_max)  # Clamp between supported values
             # Compute L2 projection of Tz onto fixed support z
-            b = (Tz - self.Vmin) / self.delta_z  # b = (Tz - Vmin) / Δz
+            b = (Tz - self.V_min) / self.delta_z  # b = (Tz - Vmin) / Δz
             l, u = b.floor().to(torch.int64), b.ceil().to(torch.int64)
             # Fix disappearing probability mass when l = b = u (b is int)
             l[(u > 0) * (l == u)] -= 1

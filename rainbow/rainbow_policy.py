@@ -4,46 +4,43 @@ import math
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch import optim
+
 
 
 class Policy():
-    def __init__(self, nn_args, action_space, lr, adam_eps, atoms, V_min, V_max, device, model):
+    def __init__(self, nn_args, action_space, atoms, V_min, V_max, device, model):
         self.action_space = action_space
         self.atoms = atoms
-        self.Vmin = V_min
-        self.Vmax = V_max
-        self.support = torch.linspace(V_min, V_max, self.atoms).to(device=device)  # Support (range) of z
-        self.delta_z = (V_max - V_min) / (self.atoms - 1)
+        self.V_min = V_min
+        self.V_max = V_max
+        self.support = torch.linspace(V_min, V_max, atoms).to(device=device)  # Support (range) of z
 
-        self.online_net = DQN(action_space, **nn_args).to(device=device)
+        self.online_net = DQN(action_space, atoms, **nn_args).to(device=device)
         if model and os.path.isfile(model):
             # Always load tensors onto CPU by default, will shift to GPU if necessary
             self.online_net.load_state_dict(torch.load(model, map_location='cpu'))
         self.online_net.train()
 
-        self.target_net = DQN(action_space, **nn_args).to(device=device)
+        self.target_net = DQN(action_space, atoms, **nn_args).to(device=device)
         self.update_target_net()
         self.target_net.train()
         for param in self.target_net.parameters():
             param.requires_grad = False
 
-        self.optimiser = optim.Adam(self.online_net.parameters(), lr=lr, eps=adam_eps)
 
     # Resets noisy weights in all linear layers (of online net only)
-
     def reset_noise(self):
         self.online_net.reset_noise()
         # Acts based on single state (no batch)
 
     def act(self, state):
         with torch.no_grad():
-            return (self.online_net(state.unsqueeze(0)) * self.support).sum(2).argmax(1).item()
+            return (self.online_net(state) * self.support).sum(2).argmax(1).unsqueeze(1)
 
-        # Acts with an ε-greedy policy (used for evaluation only)
-
+    # Acts with an ε-greedy policy (used for evaluation only)
     def act_e_greedy(self, state, epsilon=0.001):  # High ε can reduce evaluation scores drastically
-        return np.random.randint(0, self.action_space) if np.random.random() < epsilon else self.act(state)
+        return torch.from_numpy(np.random.randint(0, self.action_space, size=(state.shape[0], 1))) \
+            if np.random.random() < epsilon else self.act(state)
 
     def update_target_net(self):
         self.target_net.load_state_dict(self.online_net.state_dict())
@@ -55,7 +52,7 @@ class Policy():
     # Evaluates Q-value based on single state (no batch)
     def evaluate_q(self, state):
         with torch.no_grad():
-            return (self.online_net(state.unsqueeze(0)) * self.support).sum(2).max(1)[0].item()
+            return (self.online_net(state) * self.support).sum(2).max(1)
 
     def train(self):
         self.online_net.train()

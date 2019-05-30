@@ -13,7 +13,7 @@ Ts, rewards, Qs, best_avg_reward = [], [], [], -1e10
 # Test DQN
 def test(args, T, dqn, val_mem, evaluate=False):
     global Ts, rewards, Qs, best_avg_reward
-    env = Env(args)
+    env = Env(args.device, args.seed, args.max_episode_length, args.game, args.history_length)
     env.eval()
     Ts.append(T)
     T_rewards, T_Qs = [], []
