@@ -1,6 +1,6 @@
 seed = 1957
 env_name='PongNoFrameskip-v4'
-T_max = int(50e6)
+T_max = int(10e6)
 max_episode_length = int(108e3)
 history_length = 4
 hidden_size = 512
@@ -28,3 +28,4 @@ render = False
 enable_cudnn=True
 
 num_envs = 2
+

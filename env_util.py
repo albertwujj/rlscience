@@ -1,6 +1,6 @@
 import os
 from baselines import bench
-from baselines.common.atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, \
+from baselines.common.atari_wrappers import NoopResetEnv, MaxAndSkipEnv, TimeLimit, EpisodicLifeEnv, \
     FireResetEnv, WarpFrame, ScaledFloatFrame, ClipRewardEnv, FrameStack
 from a2c_ppo_acktr.envs import TimeLimitMask, TransposeImage, VecNormalize, VecPyTorch, VecPyTorchFrameStack
 from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
@@ -42,7 +42,7 @@ def channel_major_env(env):
         env = TransposeImage(env, op=[2, 0, 1])
     return env
 
-def benchmark_env(env, log_dir, rank, allow_early_resets=False):
+def benchmark_env(env, log_dir, rank, allow_early_resets=True):
     if log_dir is not None:
         env = bench.Monitor(
             env,

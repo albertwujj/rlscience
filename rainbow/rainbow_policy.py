@@ -35,12 +35,14 @@ class Policy():
 
     def act(self, state):
         with torch.no_grad():
-            return (self.online_net(state) * self.support).sum(2).argmax(1).unsqueeze(1)
+            action = (self.online_net(state) * self.support).sum(2).argmax(1) # shape (batch)
+            return action
 
     # Acts with an ε-greedy policy (used for evaluation only)
     def act_e_greedy(self, state, epsilon=0.001):  # High ε can reduce evaluation scores drastically
-        return torch.from_numpy(np.random.randint(0, self.action_space, size=(state.shape[0], 1))) \
-            if np.random.random() < epsilon else self.act(state)
+        action = torch.from_numpy(np.random.randint(0, self.action_space, size=(state.shape[0]))) \
+            if np.random.random() < epsilon else self.act(state) # shape (batch)
+        return action
 
     def update_target_net(self):
         self.target_net.load_state_dict(self.online_net.state_dict())

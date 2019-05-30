@@ -2,59 +2,70 @@ from collections import namedtuple
 import numpy as np
 import torch
 
-Transition = namedtuple('Transition', ('timestep', 'state', 'action', 'reward', 'nonterminal', 'next_state'))
+Transition = namedtuple('Transition', ('timestep', 'state', 'action', 'reward', 'nonterminal'))
 
-# TODO: just make each blank trans contain reference to 0 tensor?
-blank_trans = Transition(0, torch.zeros(84, 84, dtype=torch.uint8), None, 0, False, torch.zeros(84, 84, dtype=torch.uint8))
+blank_trans = Transition(0, torch.zeros(84, 84, dtype=torch.uint8), None, 0, False)
 
 
 class ReplayMemory():
-    def __init__(self, args, capacity):
-        self.device = args.device
+    def __init__(self, device, num_envs, capacity, history_length, gamma, multi_step, priority_weight, priority_exponent):
+        self.num_envs = num_envs
+        self.device = device
         self.capacity = capacity
-        self.history = args.history_length
-        self.gamma = args.gamma
-        self.n = args.multi_step
-        self.priority_weight = args.priority_weight  # Initial importance sampling weight β, annealed to 1 over course of training
-        self.priority_exponent = args.priority_exponent
-        self.t = 0  # Internal episode timestep counter
+        self.history = history_length
+        self.gamma = gamma
+        self.n = multi_step
+        self.priority_weight = priority_weight  # Initial importance sampling weight β, annealed to 1 over course of training
+        self.priority_exponent = priority_exponent
+        self.t = [0] * num_envs  # Internal episode timestep counter for each env
         self.transitions = SegmentTree(
             capacity)  # Store transitions in a wrap-around cyclic buffer within a sum tree for querying priorities
 
     # Adds state and action at time t, reward and terminal at time t + 1
-    def append(self, states, actions, rewards, terminals, next_states):
-        for state, action, reward, terminal, next_state in zip(states, actions, rewards, terminals, next_states):
-            state = state[-1].mul(255).to(dtype=torch.uint8,
-                                          device=torch.device('cpu'))  # Only store last frame and discretise to save memory
-            self.transitions.append(Transition(self.t, state, action, reward, not terminal, next_state),
+    def append(self, states, actions, rewards, terminals):
+        for i, (state, action, reward, terminal) in enumerate(zip(states, actions, rewards, terminals)):
+            state = state[-1].mul(255).to(dtype=torch.uint8, device=torch.device(
+                'cpu'))  # Only store last frame and discretise to save memory
+            self.transitions.append(Transition(self.t[i], state, action, reward, not terminal),
                                     self.transitions.max)  # Store new transition with maximum priority
-            self.t = 0 if terminal else self.t + 1  # Start new episodes with t = 0
+
+            self.t[i] = 0 if terminal else self.t[i] + 1 # update timestep counter
 
 
-    # Returns a transition (consisting of multiple actual transitions)
+    # Returns a (self.history + n)-step transition
     # with blank states where appropriate
-    # self.history = count of one-adjacent transitions to update on (default 4)
+    # self.history = count of adjacent transitions to update on (default 4)
     def _get_transition(self, idx):
         transition = np.array([None] * (self.history + self.n))
         transition[self.history - 1] = self.transitions.get(idx)
         for t in range(self.history - 2, -1, -1):  # e.g. 2 1 0
             if transition[t + 1].timestep == 0:
-                transition[t] = blank_trans  # If future frame has timestep 0
+                # sets transitions before timestep 0 to blank
+                # (histories starting before 0 should not be calculated)
+                transition[t] = blank_trans
             else:
-                transition[t] = self.transitions.get(idx - self.history + 1 + t)
+                hist_idx = idx + (t + 1 - self.history) * self.num_envs
+                transition[t] = self.transitions.get(hist_idx)
+
+                if transition[t] is None:
+                    print(f'hist none: {t}, {transition[t + 1].timestep}')
+                    print(self.transitions.data[hist_idx:hist_idx + 4])
+
         for t in range(self.history, self.history + self.n):  # e.g. 4 5 6
             if transition[t - 1].nonterminal:
-                transition[t] = self.transitions.get(idx - self.history + 1 + t)
+                transition[t] = self.transitions.get(idx + (t + 1 - self.history) * self.num_envs)
+                if transition[t] is None:
+                    print(f'n-step none: {t}, {transition[t - 1].timestep}')
+                    print(self.transitions.data[hist_idx % self.transitions.size:(hist_idx + 4) % self.transitions.size])
             else:
-                transition[t] = blank_trans  # If prev (next) frame is terminal
+                transition[t] = blank_trans  # sets transitions after terminal to blank
         return transition
 
-    # Returns a valid sample from a segment
-    def _get_sample_from_segment(self, segment_size, i):
+    def _get_sample_from_segment(self, segment, i):
         valid = False
         while not valid:
-            sample = np.random.uniform(i * segment_size,
-                                       (i + 1) * segment_size)  # Uniformly sample an element from within a segment
+            sample = np.random.uniform(i * segment,
+                                       (i + 1) * segment)  # Uniformly sample an element from within a segment
             prob, idx, tree_idx = self.transitions.find(
                 sample)  # Retrieve sample from tree with un-normalised probability
             # Resample if transition straddled current index or probablity 0
@@ -67,9 +78,8 @@ class ReplayMemory():
         # Create un-discretised state and nth next state
         state = torch.stack([trans.state for trans in transition[:self.history]]).to(dtype=torch.float32,
                                                                                      device=self.device).div_(255)
-        next_state = torch.stack([trans.next_state for trans in transition[:self.history]]).to(dtype=torch.float32,
-                                                                                     device=self.device).div_(255)
-
+        next_state = torch.stack([trans.state for trans in transition[self.n:self.n + self.history]]).to(
+            dtype=torch.float32, device=self.device).div_(255)
         # Discrete action to be used as index
         action = torch.tensor([transition[self.history - 1].action], dtype=torch.int64, device=self.device)
         # Calculate truncated n-step discounted return R^n = Σ_k=0->n-1 (γ^k)R_t+k+1 (note that invalid nth next states have reward 0)
@@ -125,6 +135,7 @@ class ReplayMemory():
 
 
 # Segment tree data structure where parent node values are sum/max of children node values
+# children nodes are the transitions
 class SegmentTree():
     def __init__(self, size):
         self.index = 0
@@ -178,4 +189,3 @@ class SegmentTree():
 
     def total(self):
         return self.sum_tree[0]
-
