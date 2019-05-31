@@ -5,17 +5,17 @@ import torch
 import gym
 from tqdm import tqdm
 
+from rainbow.vec_buffer import PrioritizedReplayBuffer, VecNStepTransitioner
+
 from rainbow.rainbow_algo import RainbowQLearn
 from rainbow.rainbow_policy import Policy
-from rainbow.rainbow_buffer import ReplayMemory
-from rainbow.rainbow_test import test
 from rainbow import rainbow_args as args
 from env_util import atari_wrap, deepmind_wrap, channel_major_env, benchmark_env, pt_vec_envs
 
 # short run for debugging
 debugging = True
 if debugging:
-    args.multi_step = 2
+    args.n_step = 2
     args.learn_start=100
     args.evaluation_interval = 100
     args.evaluation_size = 10
@@ -64,24 +64,16 @@ nn_args = {'history_length': args.history_length,
            'hidden_size': args.hidden_size, 'noisy_std': args.noisy_std}
 policy = Policy(nn_args, envs.action_space.n, args.atoms, args.V_min, args.V_max, device,
                 args.model)
-qlearn = RainbowQLearn(policy, args.lr, args.adam_eps, args.batch_size, args.multi_step, args.gamma)
-mem = ReplayMemory(device, args.num_envs, args.memory_capacity, args.history_length, args.gamma, args.multi_step,
-                   args.priority_weight, args.priority_exponent)
+qlearn = RainbowQLearn(policy, args.lr, args.adam_eps, args.batch_size, args.n_step, args.gamma)
+PER = PrioritizedReplayBuffer(args.memory_capacity, 1)
+nstep_trans_tracker = VecNStepTransitioner(args.num_envs, args.n_step, args.gamma)
+
 priority_weight_increase = (1 - args.priority_weight) / (args.T_max - args.learn_start)
 
-# Construct validation memory
-val_mem = ReplayMemory(device, args.num_envs, args.evaluation_size, args.history_length, args.gamma, args.multi_step,
-                   args.priority_weight, args.priority_exponent)
 T = 0
 state = envs.reset()
-while T < args.evaluation_size:
-    next_state, _, done, _ = envs.step(torch.from_numpy(np.random.randint(0, envs.action_space.n, size=(args.num_envs,1))))
-    val_mem.append(state, [None]*args.num_envs, [None]*args.num_envs, done)
-    state = next_state
-    T += 1
 
-
-state = envs.reset()
+beta = 1
 for T in tqdm(range(args.T_max)):
 
     if T % args.replay_frequency == 0:
@@ -90,24 +82,17 @@ for T in tqdm(range(args.T_max)):
     action = policy.act(state)  # Choose an action greedily (with noisy weights)
     next_state, reward, done, _ = envs.step(action)  # Step
 
-    mem.append(state, action, reward, done)  # Append transitions to memory
+    nstep_trans = nstep_trans_tracker.next(state, action, reward, done)
+    PER.add(nstep_trans)
 
     # Train and test
     if T >= args.learn_start:
-        mem.priority_weight = min(mem.priority_weight + priority_weight_increase,
-                                  1)  # Anneal importance sampling weight β to 1
-
+        transes_idx = PER.sample(args.batch_size, beta)
+        transes, idx = transes_idx[:-1], transes_idx[-1]
         if T % args.replay_frequency == 0:
             for _ in range(args.num_envs):
-                qlearn.update(mem)  # Train with n-step distributional double-Q learning
-
-        if T % args.evaluation_interval == 0:
-            print('beginning eval')
-            policy.eval()  # Set DQN (online network) to evaluation mode
-            avg_reward, avg_Q = test(args, T, policy, val_mem)  # Test
-            log('T = ' + str(T) + ' / ' + str(args.T_max) + ' | Avg. reward: ' + str(
-                avg_reward) + ' | Avg. Q: ' + str(avg_Q))
-            policy.train()  # Set DQN (online network) back to training mode
+                loss = qlearn.update(*transes)  # Train with n-step distributional double-Q learning
+                PER.update_priorities(idx, loss)
 
         # Update target network
         if T % args.target_update == 0:

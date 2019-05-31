@@ -16,9 +16,8 @@ class RainbowQLearn():
         self.optimiser = optim.Adam(self.online_net.parameters(), lr=lr, eps=adam_eps)
 
 
-    def update(self, mem):
-        # Sample transitions
-        idxs, states, actions, returns, next_states, nonterminals, weights = mem.sample(self.batch_size)
+    def update(self, states, actions, rewards, next_states, dones, weights):
+        nonterminals = ~dones
 
         # Calculate current state probabilities (online network noise already sampled)
         log_ps = self.online_net(states, log=True)  # Log probabilities log p(s_t, ·; θonline)
@@ -36,7 +35,7 @@ class RainbowQLearn():
                 self.batch_size), argmax_indices_ns]  # Double-Q probabilities p(s_t+n, argmax_a[(z, p(s_t+n, a; θonline))]; θtarget)
 
             # Compute Tz (Bellman operator T applied to z)
-            Tz = returns.unsqueeze(1) + nonterminals * (self.gamma ** self.n) * self.support.unsqueeze(
+            Tz = rewards.unsqueeze(1) + nonterminals * (self.gamma ** self.n) * self.support.unsqueeze(
                 0)  # Tz = R^n + (γ^n)z (accounting for terminal states)
             Tz = Tz.clamp(min=self.V_min, max=self.V_max)  # Clamp between supported values
             # Compute L2 projection of Tz onto fixed support z
@@ -60,4 +59,5 @@ class RainbowQLearn():
         (weights * loss).mean().backward()  # Backpropagate importance-weighted minibatch loss
         self.optimiser.step()
 
+        return loss.detach.cpu().numpy()
         mem.update_priorities(idxs, loss.detach().cpu().numpy())  # Update priorities of sampled transitions
